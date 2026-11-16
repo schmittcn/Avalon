@@ -262,7 +262,6 @@ kept). By hand, put them before the command of [Run](#run) and use `-b 4096 -ub 
 | `-b 4096 -ub 4096` | the compute buffers of a larger ubatch do not fit beside the expert cache in 16 GB | #14, #46 |
 | `GGML_CUDA_MOE_CACHE_RESERVE_MB=1024` | the automatic 400 MiB leaves no room for the draft's buffers in 16 GB | #14, #27 |
 | `GPU_MAX_HW_QUEUES=2` | 8 queues oversubscribe the runlist: GPU at 99 % when idle, generation 44 - 49 instead of 52 - 59 t/s. Not 1: it deadlocks | #27 |
-| `HIP_ENABLE_DEFERRED_LOADING=0` | with the MTP draft the first request can stall forever on an RX 6900 XT (a lost lazy code-object load); the heavier fallback is `HSA_ENABLE_SDMA=0` | #15 |
 | `GGML_CUDA_MOE_HOSTED_THREADS=<cores - 2>` | unset, the CPU team can get 1 thread; 12 - 16 are equal on a Ryzen 9 5950X, 14 leaves room for the other threads | #56 |
 | `LLAMA_HOST_EMBD=0` | the host path of passes of 6 tokens or fewer (all of generation) diverges on gfx1030: KLD 0.29 against 0.055 | #50 |
 | `GGML_CUDA_MOE_SMALL_PASS_MAX=64` | the short prompt blocks back at their speed with the two settings above | #46, #51 |
