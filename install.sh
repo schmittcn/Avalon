@@ -178,9 +178,8 @@ fi
 case "$AMDGPU_TARGETS" in gfx103*)
     cores=$(lscpu -p=CORE,SOCKET | grep -v '^#' | sort -u | wc -l)
     launcher_env GPU_MAX_HW_QUEUES 2
-    launcher_env GGML_CUDA_MOE_HOSTED_THREADS $(( cores > 3 ? cores - 2 : 1 ))
+    launcher_env GGML_CUDA_MOE_HOSTED_THREADS $(( cores > 1 ? cores / 2 : 1 ))
     launcher_env LLAMA_HOST_EMBD 0
-    launcher_env GGML_CUDA_MOE_SMALL_PASS_MAX 64
     ;;
 esac
 

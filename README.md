@@ -252,29 +252,46 @@ CPU, 6% faster per step on the RTX 4090 (neutral on the RX 7900 XT, where it sta
 ### RDNA2 (gfx1030: RX 6800 / 6900 XT, 16 GB)
 
 RDNA2 has no matrix cores (WMMA): the FP16 prompt products, the chunked GDN, the int8 QSA attention and the tile masks
-are RDNA3-only and fall back to the generic kernels, so the prefill is slower (~800 t/s reported on an RX 6800 XT,
-PCIe 3.0) while generation stays close (65 - 73 t/s with MTP there). Build with `-DAMDGPU_TARGETS=gfx1030`; the
-installer does it and writes these settings into the `avalon-server` launcher (a value already in the environment is
-kept). By hand, put them before the command of [Run](#run) and use `-b 4096 -ub 4096`:
+are RDNA3-only and fall back to the generic kernels, so the prefill is slower while generation stays close. Build with
+`-DAMDGPU_TARGETS=gfx1030`; the installer does it and writes the settings below into the `avalon-server` launcher (a
+value already in the environment is kept). By hand, put them before the command of [Run](#run) and use
+`-b 4096 -ub 4096`.
 
-| setting | why | source |
-|---|---|---|
-| `-b 4096 -ub 4096` | the compute buffers of a larger ubatch do not fit beside the expert cache in 16 GB | #14, #46 |
-| `GGML_CUDA_MOE_CACHE_RESERVE_MB=1024` | the automatic 400 MiB leaves no room for the draft's buffers in 16 GB | #14, #27 |
-| `GPU_MAX_HW_QUEUES=2` | 8 queues oversubscribe the runlist: GPU at 99 % when idle, generation 44 - 49 instead of 52 - 59 t/s. Not 1: it deadlocks | #27 |
-| `GGML_CUDA_MOE_HOSTED_THREADS=<cores - 2>` | unset, the CPU team can get 1 thread; 12 - 16 are equal on a Ryzen 9 5950X, 14 leaves room for the other threads | #56 |
-| `LLAMA_HOST_EMBD=0` | the host path of passes of 6 tokens or fewer (all of generation) diverges on gfx1030: KLD 0.29 against 0.055 | #50 |
-| `GGML_CUDA_MOE_SMALL_PASS_MAX=64` | the short prompt blocks back at their speed with the two settings above | #46, #51 |
+Measured on an **RX 6900 XT 16 GB, PCIe 4.0 x16, Ryzen 9 5950X, 64 GB DDR4, ROCm 7.2.4** (a desktop session running, the
+balanced power profile), 262k context, MTP with 2 draft tokens, greedy, 512 tokens, one server start per run, 4 runs
+(Nov 16):
 
-**None of this is measured on the reference machine, and this fork's defaults are not measured yet either**: they are
-the settings of the RDNA2 owners in the issues above (an RX 6800 XT and an RX 6900 XT, both with a Ryzen 9 5950X).
+| case | result |
+|---|---|
+| generation, short prompt, warm cache | 78.6 - 80.1 t/s |
+| generation after a 20k prompt | 68.6 - 71.1 t/s |
+| prefill, 20k prompt | 718 - 1,088 t/s (median 939) |
+| prefill, 811 tokens after 5 s idle | 445 - 474 t/s |
+| prefill, 257 / 300 tokens | 242 / 235 t/s (1 run) |
+| ready after a start | 15 - 50 s |
+
+| setting | measured here (2 runs or more each) |
+|---|---|
+| `GPU_MAX_HW_QUEUES=2` | prefill of the 20k prompt 827 - 1,076 t/s, against 337 - 444 with the 8 queues Avalon sets; generation the same |
+| `GGML_CUDA_MOE_HOSTED_THREADS=<cores / 2>` | 8 threads: the 811-token prompt at 445 - 474 t/s, against 236 - 327 with 14 and 278 - 290 with 16; generation the same from 6 threads up. Unset, the team can get 1 thread (#56) |
+| `-b 4096 -ub 4096` | 8192 failed to start once of 2 (compute buffers, out of memory) and was not faster; 2048 was not faster |
+| `GGML_CUDA_MOE_CACHE_RESERVE_MB=1024` | 512 gave the same speeds; 1024 kept for the long contexts, not measured beyond a 20k prompt |
+| `LLAMA_HOST_EMBD=0` | no speed difference. Kept for #50 (a KLD of 0.29 against 0.055 on gfx1030 with the host path), not measured again here |
+
+Tried without a measurable effect, so not set: `GGML_CUDA_MOE_SMALL_PASS_MAX=64`, `HIP_ENABLE_DEFERRED_LOADING=0`.
+`GGML_MOE_HOSTED_MAX_ROWS=256` gives the 811-token prompt the same speed as 8 threads but 257 - 300 tokens run at
+155 - 181 t/s instead of 235 - 242.
 
 Known problems on RDNA2:
+- **A hang in the warmup**, 3 starts of 25 on this machine: fixed in this fork (a hosted layer's device buffers were
+  made under the lock the mailbox thread takes), 0 of 40 after.
 - **A hard reset of the machine** on one RX 6800 XT when a large hosted block starts from an idle GPU at the top shader
-  clock (#27); an RX 6900 XT ran the same replay without it. If it happens: `GGML_MOE_HOSTED_MAX_ROWS=256` with
-  `-b 2048 -ub 2048`, or a shader clock capped at 2200 MHz (`pp_od_clk_voltage`).
+  clock (#27). Not seen here in 39 runs of that pattern with the default hosted limit (a 20k prompt, 5 s idle, a short unrelated prompt). If it
+  happens: `GGML_MOE_HOSTED_MAX_ROWS=256` with `-b 2048 -ub 2048`, or a shader clock capped at 2200 MHz
+  (`pp_od_clk_voltage`).
 - Killing a server that hangs can wedge the GPU until a reset of the card (#23).
-- `--spec-type ngram-simple,draft-mtp` is ~5 % faster on code edits with `LLAMA_GUEST_RELEASE=0` (#62).
+- `--spec-type ngram-simple,draft-mtp` is reported ~5 % faster on code edits with `LLAMA_GUEST_RELEASE=0` (#62), not
+  measured here.
 
 ### With Lemonade (untested)
 
