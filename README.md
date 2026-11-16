@@ -257,7 +257,7 @@ are RDNA3-only and fall back to the generic kernels, so the prefill is slower wh
 value already in the environment is kept). By hand, put them before the command of [Run](#run) and use
 `-b 4096 -ub 4096`.
 
-Measured on an **RX 6900 XT 16 GB, PCIe 4.0 x16, Ryzen 9 5950X, 64 GB DDR4, ROCm 7.2.4** (a desktop session running, the
+Measured on an **RX 6900 XT 16 GB, PCIe 4.0 x16, Ryzen 9 5950X, 64 GB DDR4-3600, ROCm 7.2.4** (a desktop session running, the
 balanced power profile), 262k context, MTP with 2 draft tokens, greedy, 512 tokens, one server start per run, 4 runs
 (Nov 16):
 
