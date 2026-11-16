@@ -10806,7 +10806,7 @@ static void moe_hosted_shutdown(moe_cache_session * session) {
 static moe_hosted_layer * moe_hosted_register(moe_hosted_state & st, moe_cache_device & device,
                                               const ggml_tensor * gate_w, const ggml_tensor * up_w,
                                               const ggml_tensor * down_w, int n_used, int & slot) {
-    std::lock_guard<std::mutex> lock(st.mu);
+    std::unique_lock<std::mutex> lock(st.mu);
     const auto found = st.slot_of.find(gate_w->data);
     if (found != st.slot_of.end()) {
         slot = found->second;
@@ -10869,6 +10869,9 @@ static moe_hosted_layer * moe_hosted_register(moe_hosted_state & st, moe_cache_d
     // EXPERT SPLIT only: the other cards' plans and each row's card (1.5 MiB a layer), read nowhere else (every use
     // checks the split or its cards first)
     const bool split = moe_cache_expert_split();
+    // not under st.mu: a driver call here can wait for an earlier layer's block, whose mailbox the server thread serves
+    // under st.mu (the warmup hung there on gfx1030). One thread registers, and the layer is not published yet
+    lock.unlock();
     bool ok = moe_hosted_host_alloc((void **) &layer->h_flags, 512) &&
               (!split || moe_hosted_host_alloc((void **) &layer->h_plan2k, (size_t) MOE_SPLIT_MAX_CARDS * 3 * rows * sizeof(uint64_t))) &&
               (!split || moe_hosted_host_alloc((void **) &layer->h_plank, (size_t) MOE_SPLIT_MAX_CARDS * 3 * rows * sizeof(uint64_t))) &&
@@ -10902,6 +10905,7 @@ static moe_hosted_layer * moe_hosted_register(moe_hosted_state & st, moe_cache_d
         (void) cudaGetLastError();
         GGML_ABORT("MoE block hosted by the GPU: allocation failed");
     }
+    lock.lock();
     {
         const size_t act_bytes = (size_t) tokens * (GGML_PAD(layer->n_embd, MATRIX_ROW_PADDING) / QK8_1) * sizeof(block_q8_1);
         const size_t mid_bytes = (size_t) rows * (GGML_PAD(layer->n_ff, MATRIX_ROW_PADDING) / QK8_1) * sizeof(block_q8_1);
