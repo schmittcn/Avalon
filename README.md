@@ -197,7 +197,8 @@ curl -fsSL https://raw.githubusercontent.com/freriadoc/Avalon/main/install.sh | 
 ```
 
 The installer checks the machine (Linux, AVX2, ROCm 7.x, an RDNA3 GPU, or RDNA4: reported working on a Radeon AI PRO
-R9700, not measured here; 16 GB of RAM or more, ~98 GiB of disk), builds
+R9700, not measured here, or RDNA2: see [RDNA2](#rdna2-gfx1030-rx-6800--6900-xt-16-gb); 16 GB of RAM or more, ~98 GiB
+of disk), builds
 `llama-server` for the detected GPU, downloads the model and its MTP head (~89 GiB, resumable), verifies every file
 against its SHA-256 on Hugging Face and installs an `avalon-server` launcher in `~/.local/bin` with the command of
 [Run](#run). Settings (environment): `AVALON_DIR`, `MODEL_DIR`, `BIN_DIR`, `AMDGPU_TARGETS`, `SKIP_MODEL=1` (build
@@ -247,6 +248,34 @@ tokens with 4 GiB less VRAM, 4,800 with 8 GiB less). On the RX 7900 XT it gives 
 `--parallel 1` matters: other slots would keep their part of the KV cache.
 On NVIDIA, backend sampling is on by default: the target's argmax runs on the GPU instead of over 248k logits on the
 CPU, 6% faster per step on the RTX 4090 (neutral on the RX 7900 XT, where it stays off; `-bs` / `-no-bs` force it).
+
+### RDNA2 (gfx1030: RX 6800 / 6900 XT, 16 GB)
+
+RDNA2 has no matrix cores (WMMA): the FP16 prompt products, the chunked GDN, the int8 QSA attention and the tile masks
+are RDNA3-only and fall back to the generic kernels, so the prefill is slower (~800 t/s reported on an RX 6800 XT,
+PCIe 3.0) while generation stays close (65 - 73 t/s with MTP there). Build with `-DAMDGPU_TARGETS=gfx1030`; the
+installer does it and writes these settings into the `avalon-server` launcher (a value already in the environment is
+kept). By hand, put them before the command of [Run](#run) and use `-b 4096 -ub 4096`:
+
+| setting | why | source |
+|---|---|---|
+| `-b 4096 -ub 4096` | the compute buffers of a larger ubatch do not fit beside the expert cache in 16 GB | #14, #46 |
+| `GGML_CUDA_MOE_CACHE_RESERVE_MB=1024` | the automatic 400 MiB leaves no room for the draft's buffers in 16 GB | #14, #27 |
+| `GPU_MAX_HW_QUEUES=2` | 8 queues oversubscribe the runlist: GPU at 99 % when idle, generation 44 - 49 instead of 52 - 59 t/s. Not 1: it deadlocks | #27 |
+| `HIP_ENABLE_DEFERRED_LOADING=0` | with the MTP draft the first request can stall forever on an RX 6900 XT (a lost lazy code-object load); the heavier fallback is `HSA_ENABLE_SDMA=0` | #15 |
+| `GGML_CUDA_MOE_HOSTED_THREADS=<cores - 2>` | unset, the CPU team can get 1 thread; 12 - 16 are equal on a Ryzen 9 5950X, 14 leaves room for the other threads | #56 |
+| `LLAMA_HOST_EMBD=0` | the host path of passes of 6 tokens or fewer (all of generation) diverges on gfx1030: KLD 0.29 against 0.055 | #50 |
+| `GGML_CUDA_MOE_SMALL_PASS_MAX=64` | the short prompt blocks back at their speed with the two settings above | #46, #51 |
+
+**None of this is measured on the reference machine, and this fork's defaults are not measured yet either**: they are
+the settings of the RDNA2 owners in the issues above (an RX 6800 XT and an RX 6900 XT, both with a Ryzen 9 5950X).
+
+Known problems on RDNA2:
+- **A hard reset of the machine** on one RX 6800 XT when a large hosted block starts from an idle GPU at the top shader
+  clock (#27); an RX 6900 XT ran the same replay without it. If it happens: `GGML_MOE_HOSTED_MAX_ROWS=256` with
+  `-b 2048 -ub 2048`, or a shader clock capped at 2200 MHz (`pp_od_clk_voltage`).
+- Killing a server that hangs can wedge the GPU until a reset of the card (#23).
+- `--spec-type ngram-simple,draft-mtp` is ~5 % faster on code edits with `LLAMA_GUEST_RELEASE=0` (#62).
 
 ### With Lemonade (untested)
 
@@ -298,7 +327,7 @@ More than two GPUs is untested.
 
 - **One model.** Avalon is tuned for Qwen3.8-Flash-Next; the GGUF files above use types and a layout stock llama.cpp
   does not have. Other models run as in llama.cpp, without the expert cache work.
-- **GPUs measured.** One AMD GPU (RDNA3, RDNA4 by users) and pairs of NVIDIA GPUs with the pipeline stages (see
+- **GPUs measured.** One AMD GPU (RDNA3; RDNA4 and RDNA2 by users) and pairs of NVIDIA GPUs with the pipeline stages (see
   above). Two AMD GPUs and more than two GPUs: untested.
 - **Tuned on RDNA3 with ROCm 7.2.** CUDA builds and was measured on rented RTX 4090s (see
   [NVIDIA](#nvidia-cuda-one-rented-rtx-4090)); its kernels are not tuned for NVIDIA yet, and the installer is ROCm only.

@@ -46,19 +46,21 @@ case "$rocm_ver" in
 esac
 
 # GPU: RDNA3 (gfx1100 measured; gfx1101 / gfx1102 should work) or RDNA4 (gfx1200 / gfx1201: reported working by a user,
-# a Radeon AI PRO R9700, not measured here); APUs and older generations are refused
+# a Radeon AI PRO R9700, not measured here) or RDNA2 (gfx1030 - gfx1032: RX 6800 / 6900 XT reported working by users,
+# no matrix cores, so the RDNA3 prompt kernels fall back); APUs and older generations are refused
 if [ -z "${AMDGPU_TARGETS:-}" ]; then
     gfx=$("$ROCM/bin/rocminfo" 2>/dev/null | grep -oE '\bgfx[0-9a-f]+\b' | sort -u | tr '\n' ' ' || true)
-    for g in gfx1100 gfx1101 gfx1102 gfx1201 gfx1200; do
+    for g in gfx1100 gfx1101 gfx1102 gfx1201 gfx1200 gfx1030 gfx1031 gfx1032; do
         case " $gfx " in *" $g "*) AMDGPU_TARGETS=$g; break ;; esac
     done
     if [ -z "${AMDGPU_TARGETS:-}" ]; then
-        fail "no RDNA3 / RDNA4 discrete GPU found (rocminfo reports: ${gfx:-nothing}). Avalon's kernels target gfx1100 - gfx1102 and gfx1200 / gfx1201"
+        fail "no RDNA2 / RDNA3 / RDNA4 discrete GPU found (rocminfo reports: ${gfx:-nothing}). Avalon's kernels target gfx1100 - gfx1102 and gfx1200 / gfx1201; gfx1030 - gfx1032 run without the matrix-core kernels"
         AMDGPU_TARGETS=${gfx%% *}
     fi
 fi
 case "$AMDGPU_TARGETS" in
     gfx1100)         echo "GPU $AMDGPU_TARGETS (RX 7900 XT / XTX: the measured target)" ;;
+    gfx103*)         warn "GPU $AMDGPU_TARGETS (RDNA2): reported working by users (RX 6800 XT / 6900 XT), not measured upstream; the launcher gets the RDNA2 settings of the README" ;;
     gfx1200|gfx1201) warn "GPU $AMDGPU_TARGETS (RDNA4): reported working by a user (R9700), not measured here; some prompt kernels are RDNA3-only" ;;
     *)               warn "GPU $AMDGPU_TARGETS: should work, not measured (Avalon is tuned on a gfx1100)" ;;
 esac
@@ -164,14 +166,33 @@ fi
 # ---------------------------------------------------------------------------------------------------------------------
 say "Installing the launcher $BIN_DIR/avalon-server"
 
+# Under 20 GB of VRAM the README's ubatch does not fit beside the expert cache (#14, #27, #46): 4096, and 1 GiB kept
+# outside the cache. RDNA2: the settings of the README's RDNA2 section, each one kept if already set in the environment.
+BATCH=9536
+ENV_LINES=
+launcher_env() { ENV_LINES+="export $1=\"\${$1:-$2}\""$'\n'; }
+if [ $vram_mib -gt 0 ] && [ $vram_mib -lt 19000 ]; then
+    BATCH=4096
+    launcher_env GGML_CUDA_MOE_CACHE_RESERVE_MB 1024
+fi
+case "$AMDGPU_TARGETS" in gfx103*)
+    cores=$(lscpu -p=CORE,SOCKET | grep -v '^#' | sort -u | wc -l)
+    launcher_env GPU_MAX_HW_QUEUES 2
+    launcher_env HIP_ENABLE_DEFERRED_LOADING 0
+    launcher_env GGML_CUDA_MOE_HOSTED_THREADS $(( cores > 3 ? cores - 2 : 1 ))
+    launcher_env LLAMA_HOST_EMBD 0
+    launcher_env GGML_CUDA_MOE_SMALL_PASS_MAX 64
+    ;;
+esac
+
 mkdir -p "$BIN_DIR"
 cat > "$BIN_DIR/avalon-server" <<EOF
 #!/usr/bin/env bash
 # Avalon: Qwen3.8-Flash-Next with MTP, 256k context, OpenAI-compatible API on http://\${HOST:-127.0.0.1}:\${PORT:-8080}
 # Extra arguments go to llama-server (e.g. -c 65536 for a smaller context).
-cd "$MODEL_DIR"
+${ENV_LINES}cd "$MODEL_DIR"
 exec "$SERVER" -m Qwen3.8-Flash-Next-Avalon-IQ3KS-00001-of-00033.gguf \\
-  -c 262144 -b 9536 -ub 9536 -fa on -ctk q8_0 -ctv q4_0 --jinja --parallel 1 \\
+  -c 262144 -b $BATCH -ub $BATCH -fa on -ctk q8_0 -ctv q4_0 --jinja --parallel 1 \\
   -md MTP/mtp-Qwen3.8-Flash-Next-shared-IQ3K-IQ4NL-FR65k.gguf --spec-type draft-mtp \\
   --spec-draft-n-max 2 -ubd 256 -ctkd q8_0 -ctvd q8_0 \\
   --host "\${HOST:-127.0.0.1}" --port "\${PORT:-8080}" "\$@"
